@@ -126,7 +126,7 @@ def extract_message_from_image(image):
             r, g, b = image.getpixel((x, y))
             bits += str(r & 1)
 
-    end_signal = '00000000'  # Fixed end signal to match encoder
+    end_signal = '11111110'
     if end_signal not in bits:
         return None
 
@@ -139,30 +139,61 @@ def extract_message_from_image(image):
 
     return message
 
+
 @app.route('/stegnography', methods=['POST'])
 def api_extract_message():
-    try:
-        if 'image' in request.files:
-            file = request.files['image']
-            if file.filename == '':
-                return jsonify({"hidden": False, "message": None}), 400
+    """
+    Simplified API endpoint to check for hidden messages.
+
+    Returns:
+    {
+        "hidden": boolean (true if message found),
+        "message": string (extracted message if found, else null)
+    }
+    """
+    if 'image' in request.files:
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({
+                "hidden": False,
+                "message": None
+            }), 400
+
+        try:
             image = Image.open(io.BytesIO(file.read()))
-        elif request.is_json and 'image_base64' in request.json:
+        except:
+            return jsonify({
+                "hidden": False,
+                "message": None
+            }), 400
+
+    elif request.is_json and 'image_base64' in request.json:
+        try:
             base64_str = request.json['image_base64']
             if 'base64,' in base64_str:
                 base64_str = base64_str.split('base64,')[1]
+
             image_data = base64.b64decode(base64_str)
             image = Image.open(io.BytesIO(image_data))
-        else:
-            return jsonify({"hidden": False, "message": None}), 400
+        except:
+            return jsonify({
+                "hidden": False,
+                "message": None
+            }), 400
 
-        hidden_message = extract_message_from_image(image)
+    else:
         return jsonify({
-            "hidden": hidden_message is not None,
-            "message": hidden_message
-        })
-    except Exception as e:
-        return jsonify({"hidden": False, "message": None, "error": str(e)}), 400
+            "hidden": False,
+            "message": None
+        }), 400
+
+    hidden_message = extract_message_from_image(image)
+
+    return jsonify({
+        "hidden": hidden_message is not None,
+        "message": hidden_message if hidden_message else None
+    })
+
 
 # --------- Run the App ---------
 if __name__ == '__main__':
