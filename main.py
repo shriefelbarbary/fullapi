@@ -112,8 +112,33 @@ def whois_lookup():
         }
         return jsonify(result)
     except Exception as e:
-        return jsonify({"error": f"WHOIS lookup failed: {str(e)}"}), 500
+        return jsonify({"error": f"WHOIS lookup failed: {str(e)}"}), 500@app.route('/stegnography', methods=['POST'])
 
+
+def api_extract_message():
+    try:
+        if 'image' in request.files:
+            file = request.files['image']
+            if file.filename == '':
+                return jsonify({"hidden": False, "message": None}), 400
+            image = Image.open(io.BytesIO(file.read()))
+        elif request.is_json and 'image_base64' in request.json:
+            base64_str = request.json['image_base64']
+            if 'base64,' in base64_str:
+                base64_str = base64_str.split('base64,')[1]
+            image_data = base64.b64decode(base64_str)
+            image = Image.open(io.BytesIO(image_data))
+        else:
+            return jsonify({"hidden": False, "message": None}), 400
+        hidden_message = extract_message_from_image(image)
+        return jsonify({
+            "hidden": hidden_message is not None,
+            "message": hidden_message
+        })
+    except:
+        return jsonify({"hidden": False, "message": None}), 400
+
+        
 # --------- Run the App ---------
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
