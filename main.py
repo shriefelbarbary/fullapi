@@ -166,13 +166,20 @@ UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Function to check if the file has allowed extension
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-
 def extract_hidden_message_from_lsb(video_path):
-    """Extract hidden message from the least significant bit (LSB) of video frames."""
     cap = cv2.VideoCapture(video_path)
     hidden_message_bits = []
 
@@ -180,29 +187,25 @@ def extract_hidden_message_from_lsb(video_path):
         ret, frame = cap.read()
         if not ret:
             break
-
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        lsb_frame = np.bitwise_and(gray_frame, 1)  # Extract LSB of the frame
+        lsb_frame = np.bitwise_and(gray_frame, 1)
 
-        # Extract message from LSB bits (assuming the message is encoded in the LSBs of the grayscale image)
         for row in lsb_frame:
             for pixel in row:
                 hidden_message_bits.append(pixel)
 
     cap.release()
 
-    # Convert the list of bits into a string of bytes
     message_bytes = bytearray()
     for i in range(0, len(hidden_message_bits), 8):
         byte = hidden_message_bits[i:i+8]
         if len(byte) == 8:
             message_bytes.append(int(''.join(str(b) for b in byte), 2))
 
-    # Decode message if possible
     try:
         hidden_message = message_bytes.decode('utf-8')
     except UnicodeDecodeError:
-        hidden_message = None  # If we can't decode the message, it is considered not present
+        hidden_message = None
 
     return hidden_message
 
@@ -212,24 +215,18 @@ def detect_steganography():
         return jsonify({'error': 'No file uploaded'}), 400
 
     file = request.files['file']
-
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
 
     if not allowed_file(file.filename):
         return jsonify({'error': 'File type not allowed'}), 400
 
-    # Save the file
     filename = secure_filename(file.filename)
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     file.save(filepath)
 
-    print(f"Processing file: {filename}")
-
     try:
-        # Extract hidden message from the video
         hidden_message = extract_hidden_message_from_lsb(filepath)
-
         os.remove(filepath)
 
         if hidden_message:
