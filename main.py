@@ -115,23 +115,6 @@ def whois_lookup():
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": f"WHOIS lookup failed: {str(e)}"}), 500
-def extract_message_from_image(image):
-    width, height = image.size
-    bits = ""
-    for y in range(height):
-        for x in range(width):
-            r, g, b = image.getpixel((x, y))
-            bits += str(r & 1)
-    end_signal = '11111110'
-    if end_signal not in bits:
-        return None
-    message = ""
-    for i in range(0, len(bits), 8):
-        byte = bits[i:i + 8]
-        if byte == end_signal:
-            break
-        message += chr(int(byte, 2))
-    return message
 
 # --------- Run the App ---------
 if __name__ == '__main__':
