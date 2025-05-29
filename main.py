@@ -3,12 +3,15 @@ from flask_cors import CORS
 from email import message_from_file
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
+import dns.resolver
 import socket
 import ssl
 import whois
 from PIL import Image
 import io
 import base64
+import json
+
 import cv2
 import numpy as np
 import os
@@ -162,80 +165,132 @@ def api_extract_message():
     except:
         return jsonify({"hidden": False, "message": None}), 400
 
-import cv2
-import numpy as np
-import os
-from werkzeug.utils import secure_filename
-
-UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def extract_hidden_message_from_lsb(video_path):
-    cap = cv2.VideoCapture(video_path)
-    hidden_message_bits = []
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        lsb_frame = np.bitwise_and(gray_frame, 1)
-
-        for row in lsb_frame:
-            for pixel in row:
-                hidden_message_bits.append(pixel)
-
-    cap.release()
-
-    message_bytes = bytearray()
-    for i in range(0, len(hidden_message_bits), 8):
-        byte = hidden_message_bits[i:i+8]
-        if len(byte) == 8:
-            message_bytes.append(int(''.join(str(b) for b in byte), 2))
+def analyze_spf(domain):
 
     try:
-        hidden_message = message_bytes.decode('utf-8')
-    except UnicodeDecodeError:
-        hidden_message = None
+        answers = dns.resolver.resolve(domain, 'TXT')
+        spf_records = [str(rdata).strip('"') for rdata in answers
+                       if str(rdata).strip('"').startswith('v=spf1')]
 
-    return hidden_message
+        if not spf_records:
+            return {
+                "status": "pass",
+                "mail_from": domain,
+                "authorized": "Yes",
+                "comment": "No SPF record found (considered pass)"
+            }
 
-@app.route('/vid_stegnography', methods=['POST'])
-def detect_steganography():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
+        record = spf_records[0]
+        protection = "~all" in record or "-all" in record
 
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
-    if not allowed_file(file.filename):
-        return jsonify({'error': 'File type not allowed'}), 400
+        return {
+            "status": "fail" if protection else "pass",
+            "mail_from": domain,
+            "authorized": "No" if protection else "Yes",
+            "comment": f"SPF validation {'failed' if protection else 'passed'}",
+            "record": record
+        }
 
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    file.save(filepath)
-
-    try:
-        hidden_message = extract_hidden_message_from_lsb(filepath)
-        os.remove(filepath)
-
-        if hidden_message:
-            return jsonify({'hidden': True, 'message': hidden_message})
-        else:
-            return jsonify({'hidden': False, 'message': "No hidden message detected in the video."})
+    except dns.resolver.NoAnswer:
+        return {"status": "error", "comment": "No SPF record found."}
+    except dns.resolver.NXDOMAIN:
+        return {"status": "error", "comment": f"Domain {domain} not found."}
     except Exception as e:
-        if os.path.exists(filepath):
-            os.remove(filepath)
-        return jsonify({'error': str(e)}), 500
+        return {"status": "error", "comment": str(e)}
 
+
+def dkim_analysis(domain):
+    try:
+        selectors = ['default', 'selector1', 'selector2']
+        dkim_records = {}
+        for selector in selectors:
+            try:
+                result = dns.resolver.resolve(f"{selector}._domainkey.{domain}", 'TXT')
+                for rdata in result:
+                    record = str(rdata).strip('"')
+                    if "v=DKIM1" in record:
+                        dkim_records[selector] = record
+            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+                dkim_records[selector] = "No DKIM record found."
+
+        if dkim_records:
+            status = "fail"
+            signing_domain = domain
+            header_integrity = "Possibly Altered"
+            comment = "DKIM validation failed. Email signed by malicious.com. Header integrity: Possibly Altered."
+        else:
+            status = "pass"
+            signing_domain = domain
+            header_integrity = "Intact"
+            comment = "DKIM validation passed."
+
+        return {
+            "status": status,
+            "signing_domain": signing_domain,
+            "header_integrity": header_integrity,
+            "comment": comment
+        }
+    except Exception as e:
+        return {"status": "error", "comment": str(e)}
+
+
+def dmarc_analysis(domain):
+    try:
+        result = dns.resolver.resolve(f"_dmarc.{domain}", 'TXT')
+        dmarc_records = []
+        for rdata in result:
+            record = str(rdata).strip('"')
+            if record.startswith('v=DMARC1'):
+                dmarc_records.append(record)
+
+        if dmarc_records:
+            status = "fail"
+            policy = "reject"
+            alignment = "Failed"
+            comment = f"DMARC validation failed. Policy applied: {policy}. Domain alignment: {alignment}."
+        else:
+            status = "pass"
+            policy = "none"
+            alignment = "Passed"
+            comment = "DMARC validation passed."
+
+        return {
+            "status": status,
+            "policy": policy,
+            "alignment": alignment,
+            "comment": comment
+        }
+    except Exception as e:
+        return {"status": "error", "comment": str(e)}
+
+
+@app.route('/checkspfdmark', methods=['POST'])
+def analyze_domain():
+    domain = request.args.get('domain') or (request.json and request.json.get('domain'))
+    if not domain:
+        return jsonify({"error": "Domain parameter is required"}), 400
+
+    try:
+        spf_result = analyze_spf(domain)
+        dkim_result = dkim_analysis(domain)
+        dmarc_result = dmarc_analysis(domain)
+
+        response = {
+            "SPF": {
+                "Status": spf_result['status'],
+                "Mail From": spf_result['mail_from'],
+                "Authorized": spf_result['authorized'],
+                "Comment": spf_result['comment'],
+                "Record": spf_result.get('record', '')
+            },
+            "DKIM": dkim_result,
+            "DMARC": dmarc_result
+        }
+
+        return jsonify(response)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+        
 # --------- Run the App ---------
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
