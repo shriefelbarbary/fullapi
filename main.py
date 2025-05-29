@@ -5,11 +5,14 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 import socket
 import ssl
-import os
 import whois
 from PIL import Image
 import io
 import base64
+import cv2
+import numpy as np
+import os
+from werkzeug.utils import secure_filename
 app = Flask(__name__)
 CORS(app)
 
@@ -116,84 +119,128 @@ def whois_lookup():
     except Exception as e:
         return jsonify({"error": f"WHOIS lookup failed: {str(e)}"}), 500
 
+
 def extract_message_from_image(image):
-    """Extracts hidden message from an image using LSB steganography."""
     width, height = image.size
     bits = ""
-
     for y in range(height):
         for x in range(width):
             r, g, b = image.getpixel((x, y))
             bits += str(r & 1)
-
     end_signal = '11111110'
     if end_signal not in bits:
         return None
-
     message = ""
     for i in range(0, len(bits), 8):
         byte = bits[i:i + 8]
         if byte == end_signal:
             break
         message += chr(int(byte, 2))
-
     return message
-
 
 @app.route('/stegnography', methods=['POST'])
 def api_extract_message():
-    """
-    Simplified API endpoint to check for hidden messages.
-
-    Returns:
-    {
-        "hidden": boolean (true if message found),
-        "message": string (extracted message if found, else null)
-    }
-    """
-    if 'image' in request.files:
-        file = request.files['image']
-        if file.filename == '':
-            return jsonify({
-                "hidden": False,
-                "message": None
-            }), 400
-
-        try:
+    try:
+        if 'image' in request.files:
+            file = request.files['image']
+            if file.filename == '':
+                return jsonify({"hidden": False, "message": None}), 400
             image = Image.open(io.BytesIO(file.read()))
-        except:
-            return jsonify({
-                "hidden": False,
-                "message": None
-            }), 400
-
-    elif request.is_json and 'image_base64' in request.json:
-        try:
+        elif request.is_json and 'image_base64' in request.json:
             base64_str = request.json['image_base64']
             if 'base64,' in base64_str:
                 base64_str = base64_str.split('base64,')[1]
-
             image_data = base64.b64decode(base64_str)
             image = Image.open(io.BytesIO(image_data))
-        except:
-            return jsonify({
-                "hidden": False,
-                "message": None
-            }), 400
-
-    else:
+        else:
+            return jsonify({"hidden": False, "message": None}), 400
+        hidden_message = extract_message_from_image(image)
         return jsonify({
-            "hidden": False,
-            "message": None
-        }), 400
+            "hidden": hidden_message is not None,
+            "message": hidden_message
+        })
+    except:
+        return jsonify({"hidden": False, "message": None}), 400
 
-    hidden_message = extract_message_from_image(image)
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-    return jsonify({
-        "hidden": hidden_message is not None,
-        "message": hidden_message if hidden_message else None
-    })
+# Function to check if the file has allowed extension
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+
+def extract_hidden_message_from_lsb(video_path):
+    """Extract hidden message from the least significant bit (LSB) of video frames."""
+    cap = cv2.VideoCapture(video_path)
+    hidden_message_bits = []
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        lsb_frame = np.bitwise_and(gray_frame, 1)  # Extract LSB of the frame
+
+        # Extract message from LSB bits (assuming the message is encoded in the LSBs of the grayscale image)
+        for row in lsb_frame:
+            for pixel in row:
+                hidden_message_bits.append(pixel)
+
+    cap.release()
+
+    # Convert the list of bits into a string of bytes
+    message_bytes = bytearray()
+    for i in range(0, len(hidden_message_bits), 8):
+        byte = hidden_message_bits[i:i+8]
+        if len(byte) == 8:
+            message_bytes.append(int(''.join(str(b) for b in byte), 2))
+
+    # Decode message if possible
+    try:
+        hidden_message = message_bytes.decode('utf-8')
+    except UnicodeDecodeError:
+        hidden_message = None  # If we can't decode the message, it is considered not present
+
+    return hidden_message
+
+@app.route('/vid_stegnography', methods=['POST'])
+def detect_steganography():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file uploaded'}), 400
+
+    file = request.files['file']
+
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'File type not allowed'}), 400
+
+    # Save the file
+    filename = secure_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(filepath)
+
+    print(f"Processing file: {filename}")
+
+    try:
+        # Extract hidden message from the video
+        hidden_message = extract_hidden_message_from_lsb(filepath)
+
+        os.remove(filepath)
+
+        if hidden_message:
+            return jsonify({'hidden': True, 'message': hidden_message})
+        else:
+            return jsonify({'hidden': False, 'message': "No hidden message detected in the video."})
+
+    except Exception as e:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        return jsonify({'error': str(e)}), 500
 
 # --------- Run the App ---------
 if __name__ == '__main__':
