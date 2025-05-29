@@ -162,12 +162,10 @@ def api_extract_message():
     except:
         return jsonify({"hidden": False, "message": None}), 400
 
-UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+import cv2
+import numpy as np
+import os
+from werkzeug.utils import secure_filename
 
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov'}
@@ -187,6 +185,7 @@ def extract_hidden_message_from_lsb(video_path):
         ret, frame = cap.read()
         if not ret:
             break
+
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         lsb_frame = np.bitwise_and(gray_frame, 1)
 
@@ -217,7 +216,6 @@ def detect_steganography():
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
-
     if not allowed_file(file.filename):
         return jsonify({'error': 'File type not allowed'}), 400
 
@@ -233,7 +231,6 @@ def detect_steganography():
             return jsonify({'hidden': True, 'message': hidden_message})
         else:
             return jsonify({'hidden': False, 'message': "No hidden message detected in the video."})
-
     except Exception as e:
         if os.path.exists(filepath):
             os.remove(filepath)
