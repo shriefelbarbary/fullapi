@@ -116,6 +116,29 @@ def whois_lookup():
     except Exception as e:
         return jsonify({"error": f"WHOIS lookup failed: {str(e)}"}), 500
 
+def extract_message_from_image(image):
+    """Extracts hidden message from an image using LSB steganography."""
+    width, height = image.size
+    bits = ""
+
+    for y in range(height):
+        for x in range(width):
+            r, g, b = image.getpixel((x, y))
+            bits += str(r & 1)
+
+    end_signal = '00000000'  # Fixed end signal to match encoder
+    if end_signal not in bits:
+        return None
+
+    message = ""
+    for i in range(0, len(bits), 8):
+        byte = bits[i:i + 8]
+        if byte == end_signal:
+            break
+        message += chr(int(byte, 2))
+
+    return message
+
 @app.route('/stegnography', methods=['POST'])
 def api_extract_message():
     try:
@@ -132,14 +155,14 @@ def api_extract_message():
             image = Image.open(io.BytesIO(image_data))
         else:
             return jsonify({"hidden": False, "message": None}), 400
+
         hidden_message = extract_message_from_image(image)
         return jsonify({
             "hidden": hidden_message is not None,
             "message": hidden_message
         })
-    except:
-        return jsonify({"hidden": False, "message": None}), 400
-
+    except Exception as e:
+        return jsonify({"hidden": False, "message": None, "error": str(e)}), 400
 
 # --------- Run the App ---------
 if __name__ == '__main__':
